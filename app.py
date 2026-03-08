@@ -1,6 +1,5 @@
-"""AI Workspace — Streamlit MVP (v0.2)"""
+"""AI Workspace — Streamlit MVP"""
 
-import json
 import os
 from pathlib import Path
 
@@ -11,15 +10,9 @@ import streamlit as st
 # ---------------------------------------------------------------------------
 WORKSPACE = Path(__file__).parent / "workspace"
 FILES_DIR = WORKSPACE / "files"
-ARTIFACTS_DIR = WORKSPACE / "artifacts"
-PIPELINES_DIR = WORKSPACE / "pipelines"
-INTEGRATIONS_DIR = WORKSPACE / "integrations"
+FILES_DIR.mkdir(parents=True, exist_ok=True)
 
-MODELS = ["GPT-5.2", "GPT-4o"]
-
-# Ensure directories exist
-for d in (FILES_DIR, ARTIFACTS_DIR, PIPELINES_DIR, INTEGRATIONS_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+MODELS = ["GPT-4o", "GPT-4o mini", "Claude Sonnet", "Claude Haiku"]
 
 # ---------------------------------------------------------------------------
 # Session state defaults
@@ -28,353 +21,246 @@ DEFAULTS = {
     "messages": [],
     "selected_model": MODELS[0],
     "selected_file": None,
-    "selected_folder": None,
-    "github_connected": False,
-    "confluence_connected": False,
-    "show_pipeline_builder": False,
-    "pipelines": {},
+    "file_content": "",
+    "editing": False,
+    "create_new": False,
 }
-
 for key, val in DEFAULTS.items():
     if key not in st.session_state:
         st.session_state[key] = val
 
-# Load saved pipelines from disk
-if not st.session_state["pipelines"]:
-    for p in PIPELINES_DIR.glob("*.json"):
-        st.session_state["pipelines"][p.stem] = json.loads(p.read_text())
-
-
 # ---------------------------------------------------------------------------
-# Helper: mock LLM call
+# Mock LLM
 # ---------------------------------------------------------------------------
-def call_llm(prompt: str, context: str = "", model: str = "GPT-5.2") -> str:
-    """Mock LLM response. Replace with real OpenAI call when ready."""
-    ctx_note = ""
-    if context:
-        ctx_note = f"\n\n*(Based on provided context of {len(context)} chars)*"
+def call_llm(prompt: str, model: str = "GPT-4o") -> str:
     return (
-        f"**[{model}]** Here is my analysis:\n\n"
+        f"**[{model}]** Here is my response:\n\n"
         f"You asked: *{prompt[:120]}{'…' if len(prompt) > 120 else ''}*\n\n"
-        "Based on my analysis, here are the key points:\n\n"
-        "1. **Insight A** — This is an important observation related to your question.\n"
-        "2. **Insight B** — Consider this factor when making decisions.\n"
-        "3. **Insight C** — This could be a valuable area to explore further.\n\n"
-        f"Let me know if you'd like me to dive deeper into any of these areas.{ctx_note}"
+        "1. **Point A** — This is an important observation.\n"
+        "2. **Point B** — Consider this factor.\n"
+        "3. **Point C** — Worth exploring further.\n\n"
+        "Let me know if you'd like to dive deeper."
     )
 
+# ---------------------------------------------------------------------------
+# Page config & custom CSS
+# ---------------------------------------------------------------------------
+st.set_page_config(page_title="AI Workspace", layout="wide", initial_sidebar_state="collapsed")
+
+st.markdown("""
+<style>
+    /* Hide default sidebar */
+    [data-testid="stSidebar"] { display: none; }
+
+    /* Tighter padding */
+    .block-container { padding-top: 1rem; padding-bottom: 0; }
+
+    /* File tree buttons */
+    .file-tree-btn > button {
+        text-align: left !important;
+        padding: 2px 8px !important;
+        font-size: 0.85rem !important;
+        background: transparent !important;
+        border: none !important;
+        width: 100% !important;
+    }
+    .file-tree-btn > button:hover {
+        background: rgba(151, 166, 195, 0.15) !important;
+    }
+
+    /* Selected file highlight */
+    .file-selected > button {
+        background: rgba(80, 140, 255, 0.2) !important;
+        border-left: 3px solid #508cff !important;
+    }
+
+    /* Chat messages area */
+    .chat-area {
+        height: 55vh;
+        overflow-y: auto;
+        padding: 0.5rem;
+    }
+
+    /* Compact header */
+    h1 { font-size: 1.3rem !important; margin-bottom: 0 !important; }
+    h3 { font-size: 1rem !important; margin-bottom: 0.3rem !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Helper: build file tree dict
+# Helper: collect files recursively
 # ---------------------------------------------------------------------------
-def build_tree(base: Path, prefix: str = "") -> dict:
-    """Return nested dict representing directory tree."""
-    tree: dict = {}
+def get_files(base: Path) -> list[Path]:
     if not base.exists():
-        return tree
+        return []
+    files = []
     for item in sorted(base.iterdir()):
         if item.name.startswith("."):
             continue
         if item.is_dir():
-            tree[item.name] = {"_type": "folder", "_path": str(item), "children": build_tree(item)}
+            files.extend(get_files(item))
         else:
-            tree[item.name] = {"_type": "file", "_path": str(item)}
-    return tree
+            files.append(item)
+    return files
 
+# ---------------------------------------------------------------------------
+# LAYOUT: 3 columns — File Tree | Editor | Chat
+# ---------------------------------------------------------------------------
+tree_col, editor_col, chat_col = st.columns([1.2, 3, 1.5])
 
-def render_tree(tree: dict, indent: int = 0):
-    """Render file tree in sidebar with expandable folders."""
-    for name, info in tree.items():
-        if info["_type"] == "folder":
-            with st.sidebar.expander(f"{'  ' * indent}📁 {name}", expanded=(indent < 1)):
-                for child_name, child_info in info.get("children", {}).items():
-                    if child_info["_type"] == "folder":
-                        render_tree({child_name: child_info}, indent + 1)
+# ========================== LEFT: FILE TREE ================================
+with tree_col:
+    st.markdown("### 📂 Files")
+
+    # New file button
+    if st.button("＋ New file", key="new_file_btn", use_container_width=True):
+        st.session_state["create_new"] = True
+        st.session_state["editing"] = False
+
+    # New file form
+    if st.session_state.get("create_new"):
+        with st.form("create_form", clear_on_submit=True):
+            new_name = st.text_input("File name", placeholder="notes.md")
+            col_ok, col_cancel = st.columns(2)
+            with col_ok:
+                submitted = st.form_submit_button("Create")
+            with col_cancel:
+                cancelled = st.form_submit_button("Cancel")
+
+            if submitted and new_name:
+                if not new_name.endswith(".md"):
+                    new_name += ".md"
+                new_path = FILES_DIR / new_name
+                new_path.write_text(f"# {new_name.replace('.md', '')}\n\n")
+                st.session_state["selected_file"] = str(new_path)
+                st.session_state["file_content"] = new_path.read_text()
+                st.session_state["create_new"] = False
+                st.session_state["editing"] = True
+                st.rerun()
+            if cancelled:
+                st.session_state["create_new"] = False
+                st.rerun()
+
+    st.divider()
+
+    # Render file list
+    files = get_files(FILES_DIR)
+    for f in files:
+        rel = f.relative_to(FILES_DIR)
+        is_selected = st.session_state["selected_file"] == str(f)
+        css_class = "file-selected" if is_selected else "file-tree-btn"
+
+        with st.container():
+            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
+            if st.button(f"📄 {rel}", key=f"f_{f}", use_container_width=True):
+                st.session_state["selected_file"] = str(f)
+                st.session_state["file_content"] = f.read_text(errors="replace")
+                st.session_state["editing"] = False
+                st.session_state["create_new"] = False
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+# ========================== CENTER: EDITOR =================================
+with editor_col:
+    if st.session_state["selected_file"]:
+        fpath = Path(st.session_state["selected_file"])
+
+        if not fpath.exists():
+            st.warning("File not found.")
+        else:
+            # Load content if not yet loaded
+            if not st.session_state["file_content"]:
+                st.session_state["file_content"] = fpath.read_text(errors="replace")
+
+            # Header row with file name and action buttons
+            head_left, head_right = st.columns([3, 2])
+            with head_left:
+                st.markdown(f"### 📝 {fpath.name}")
+            with head_right:
+                btn_cols = st.columns(3)
+                with btn_cols[0]:
+                    if st.session_state["editing"]:
+                        if st.button("💾 Save", use_container_width=True):
+                            fpath.write_text(st.session_state["file_content"])
+                            st.session_state["editing"] = False
+                            st.rerun()
                     else:
-                        if st.button(f"📄 {child_name}", key=f"file_{child_info['_path']}"):
-                            st.session_state["selected_file"] = child_info["_path"]
-                            st.session_state["selected_folder"] = info["_path"]
-        else:
-            if st.sidebar.button(f"{'  ' * indent}📄 {name}", key=f"file_{info['_path']}"):
-                st.session_state["selected_file"] = info["_path"]
-
-
-# ---------------------------------------------------------------------------
-# Page config
-# ---------------------------------------------------------------------------
-st.set_page_config(page_title="AI Workspace", layout="wide")
-
-# ---------------------------------------------------------------------------
-# HEADER
-# ---------------------------------------------------------------------------
-header_cols = st.columns([3, 1, 1])
-with header_cols[0]:
-    st.title("AI Workspace")
-with header_cols[1]:
-    st.session_state["selected_model"] = st.selectbox(
-        "Model", MODELS, index=MODELS.index(st.session_state["selected_model"])
-    )
-with header_cols[2]:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔗 New Task Sequence"):
-        st.session_state["show_pipeline_builder"] = True
-
-st.divider()
-
-# ---------------------------------------------------------------------------
-# SIDEBAR — Knowledge Tree
-# ---------------------------------------------------------------------------
-st.sidebar.header("Knowledge Tree")
-
-# --- My Files ---
-st.sidebar.subheader("My Files")
-my_files_tree = build_tree(FILES_DIR)
-for name, info in my_files_tree.items():
-    if info["_type"] == "file":
-        if st.sidebar.button(f"📄 {name}", key=f"myfile_{info['_path']}"):
-            st.session_state["selected_file"] = info["_path"]
-            st.session_state["selected_folder"] = str(FILES_DIR)
-
-# --- LLM Artifacts ---
-st.sidebar.subheader("LLM Artifacts")
-artifacts_tree = build_tree(ARTIFACTS_DIR)
-if artifacts_tree:
-    for name, info in artifacts_tree.items():
-        if info["_type"] == "file":
-            if st.sidebar.button(f"📄 {name}", key=f"artifact_{info['_path']}"):
-                st.session_state["selected_file"] = info["_path"]
-                st.session_state["selected_folder"] = str(ARTIFACTS_DIR)
-else:
-    st.sidebar.caption("No artifacts yet")
-
-# --- Integrations ---
-st.sidebar.subheader("Integrations")
-
-# GitHub
-if st.session_state["github_connected"]:
-    with st.sidebar.expander("📁 GitHub / repo_name", expanded=False):
-        gh_tree = build_tree(INTEGRATIONS_DIR / "github")
-        for name, info in gh_tree.items():
-            if info["_type"] == "file":
-                if st.sidebar.button(f"📄 {name}", key=f"gh_{info['_path']}"):
-                    st.session_state["selected_file"] = info["_path"]
-                    st.session_state["selected_folder"] = str(INTEGRATIONS_DIR / "github")
-else:
-    if st.sidebar.button("+ Connect GitHub"):
-        st.session_state["github_connected"] = True
-        st.rerun()
-
-# Confluence
-if st.session_state["confluence_connected"]:
-    with st.sidebar.expander("📁 Confluence / AI Transformation", expanded=False):
-        cf_tree = build_tree(INTEGRATIONS_DIR / "confluence")
-        for name, info in cf_tree.items():
-            if info["_type"] == "file":
-                if st.sidebar.button(f"📄 {name}", key=f"cf_{info['_path']}"):
-                    st.session_state["selected_file"] = info["_path"]
-                    st.session_state["selected_folder"] = str(INTEGRATIONS_DIR / "confluence")
-else:
-    if st.sidebar.button("+ Connect Confluence"):
-        st.session_state["confluence_connected"] = True
-        st.rerun()
-
-# --- Pipelines ---
-st.sidebar.subheader("Task Sequences")
-if st.session_state["pipelines"]:
-    for pname in st.session_state["pipelines"]:
-        if st.sidebar.button(f"📄 {pname}", key=f"pipeline_{pname}"):
-            st.session_state["selected_pipeline_run"] = pname
-else:
-    st.sidebar.caption("No pipelines yet")
-
-# --- Upload ---
-st.sidebar.divider()
-uploaded = st.sidebar.file_uploader("Upload file", type=["txt", "md", "pdf"])
-if uploaded is not None:
-    dest = FILES_DIR / uploaded.name
-    dest.write_bytes(uploaded.getvalue())
-    st.sidebar.success(f"Saved {uploaded.name}")
-    st.rerun()
-
-# ---------------------------------------------------------------------------
-# MAIN AREA  —  3-column layout: Chat | File Viewer
-# ---------------------------------------------------------------------------
-
-# Check if pipeline builder should be shown
-if st.session_state.get("show_pipeline_builder"):
-    # -----------------------------------------------------------------------
-    # Pipeline Builder
-    # -----------------------------------------------------------------------
-    st.subheader("Task Sequence Builder")
-
-    with st.form("pipeline_form"):
-        seq_name = st.text_input("Sequence name", "Product Research Pipeline")
-
-        st.markdown("---")
-        num_tasks = st.number_input("Number of tasks", min_value=1, max_value=10, value=2)
-
-        tasks = []
-        for i in range(int(num_tasks)):
-            st.markdown(f"**Task {i + 1}**")
-            prompt = st.text_area(f"Prompt (task {i + 1})", key=f"task_prompt_{i}", height=80)
-            if i == 0:
-                # Gather available files for context selection
-                available_files = []
-                for d in (FILES_DIR, ARTIFACTS_DIR):
-                    for f in d.rglob("*"):
-                        if f.is_file():
-                            available_files.append(str(f))
-                ctx_file = st.selectbox(
-                    f"Input context (task {i + 1})",
-                    ["None"] + available_files,
-                    key=f"task_ctx_{i}",
-                )
-            else:
-                ctx_file = st.selectbox(
-                    f"Input context (task {i + 1})",
-                    [f"Artifact from task {i}", "None"],
-                    key=f"task_ctx_{i}",
-                )
-            tasks.append({"prompt": prompt, "context": ctx_file})
-            st.markdown("---")
-
-        submitted = st.form_submit_button("Save Sequence")
-        if submitted and seq_name:
-            pipeline_data = {"name": seq_name, "tasks": tasks}
-            st.session_state["pipelines"][seq_name] = pipeline_data
-            save_path = PIPELINES_DIR / f"{seq_name}.json"
-            save_path.write_text(json.dumps(pipeline_data, indent=2))
-            st.success(f"Pipeline '{seq_name}' saved!")
-            st.session_state["show_pipeline_builder"] = False
-            st.rerun()
-
-    if st.button("Cancel"):
-        st.session_state["show_pipeline_builder"] = False
-        st.rerun()
-
-elif st.session_state.get("selected_pipeline_run"):
-    # -----------------------------------------------------------------------
-    # Pipeline Runner
-    # -----------------------------------------------------------------------
-    pname = st.session_state["selected_pipeline_run"]
-    pipeline = st.session_state["pipelines"].get(pname, {})
-
-    st.subheader(f"Run Pipeline: {pname}")
-    st.json(pipeline)
-
-    # Select input file
-    available_files = []
-    for d in (FILES_DIR, ARTIFACTS_DIR):
-        for f in d.rglob("*"):
-            if f.is_file():
-                available_files.append(str(f))
-
-    input_file = st.selectbox("Input file", ["None"] + available_files)
-
-    if st.button("▶ Run Pipeline"):
-        tasks = pipeline.get("tasks", [])
-        prev_artifact = ""
-        if input_file and input_file != "None":
-            prev_artifact = Path(input_file).read_text(errors="replace")
-
-        for i, task in enumerate(tasks):
-            st.markdown(f"### Task {i + 1}: {task['prompt'][:60]}")
-            with st.spinner(f"Running task {i + 1}..."):
-                context = prev_artifact if prev_artifact else ""
-                response = call_llm(task["prompt"], context, st.session_state["selected_model"])
-                st.markdown(response)
-
-                # Save artifact
-                artifact_name = f"{pname}_step{i + 1}.md"
-                artifact_path = ARTIFACTS_DIR / artifact_name
-                artifact_path.write_text(response)
-                prev_artifact = response
-                st.caption(f"Saved artifact: {artifact_name}")
-
-        st.success("Pipeline complete!")
-
-    if st.button("← Back to chat"):
-        st.session_state["selected_pipeline_run"] = None
-        st.rerun()
-
-else:
-    # -----------------------------------------------------------------------
-    # Chat + File Viewer (default view)
-    # -----------------------------------------------------------------------
-    chat_col, viewer_col = st.columns([3, 2])
-
-    # --- Main Chat ---
-    with chat_col:
-        st.subheader("Chat")
-
-        # Display messages
-        chat_container = st.container(height=450)
-        with chat_container:
-            for msg in st.session_state["messages"]:
-                with st.chat_message(msg["role"]):
-                    st.markdown(msg["content"])
-
-        # Chat input
-        user_input = st.chat_input("Write message...")
-        if user_input:
-            st.session_state["messages"].append({"role": "user", "content": user_input})
-            response = call_llm(user_input, model=st.session_state["selected_model"])
-            st.session_state["messages"].append({"role": "assistant", "content": response})
-            st.rerun()
-
-        # Save last assistant message as artifact
-        if st.session_state["messages"]:
-            last_msg = st.session_state["messages"][-1]
-            if last_msg["role"] == "assistant":
-                save_cols = st.columns([3, 1])
-                with save_cols[1]:
-                    if st.button("💾 Save as artifact"):
-                        idx = len(list(ARTIFACTS_DIR.glob("*.md"))) + 1
-                        artifact_name = f"artifact_{idx}.md"
-                        (ARTIFACTS_DIR / artifact_name).write_text(last_msg["content"])
-                        st.success(f"Saved as {artifact_name}")
+                        if st.button("✏️ Edit", use_container_width=True):
+                            st.session_state["editing"] = True
+                            st.rerun()
+                with btn_cols[1]:
+                    if st.button("🗑️ Delete", use_container_width=True):
+                        fpath.unlink()
+                        st.session_state["selected_file"] = None
+                        st.session_state["file_content"] = ""
+                        st.session_state["editing"] = False
                         st.rerun()
+                with btn_cols[2]:
+                    if st.session_state["editing"]:
+                        if st.button("✖ Cancel", use_container_width=True):
+                            st.session_state["file_content"] = fpath.read_text(errors="replace")
+                            st.session_state["editing"] = False
+                            st.rerun()
 
-    # --- File Viewer ---
-    with viewer_col:
-        st.subheader("File Viewer")
+            st.divider()
 
-        if st.session_state["selected_file"]:
-            fpath = Path(st.session_state["selected_file"])
-            if fpath.exists():
-                st.caption(f"**{fpath.name}**")
-                content = fpath.read_text(errors="replace")
-                st.text_area("", content, height=350, disabled=True, key="file_content_viewer")
-
-                st.markdown("**Ask about:**")
-                ask_scope = st.radio(
-                    "Context scope",
-                    ["This file", "Entire folder"],
-                    horizontal=True,
+            # Editor or preview
+            if st.session_state["editing"]:
+                new_text = st.text_area(
+                    "edit",
+                    value=st.session_state["file_content"],
+                    height=500,
+                    key="editor_area",
                     label_visibility="collapsed",
                 )
-
-                ask_question = st.text_input("Your question about this file", key="file_question")
-                if st.button("Ask AI", key="ask_ai_file"):
-                    if ask_question:
-                        if ask_scope == "This file":
-                            ctx = content
-                        else:
-                            # Gather all files in the folder
-                            folder = Path(st.session_state.get("selected_folder", fpath.parent))
-                            parts = []
-                            for f in folder.rglob("*"):
-                                if f.is_file():
-                                    parts.append(f"--- {f.name} ---\n{f.read_text(errors='replace')}")
-                            ctx = "\n\n".join(parts)
-
-                        response = call_llm(ask_question, ctx, st.session_state["selected_model"])
-                        st.session_state["messages"].append(
-                            {"role": "user", "content": f"[About {fpath.name}] {ask_question}"}
-                        )
-                        st.session_state["messages"].append({"role": "assistant", "content": response})
-                        st.rerun()
+                st.session_state["file_content"] = new_text
             else:
-                st.warning("File not found")
-        else:
-            st.info("Select a file from the sidebar to view it here.")
+                # Render markdown preview
+                st.markdown(st.session_state["file_content"])
+    else:
+        st.markdown("### Welcome to AI Workspace")
+        st.info("← Select a file from the tree or create a new one.")
+
+# ========================== RIGHT: CHAT ====================================
+with chat_col:
+    st.markdown("### 💬 Chat")
+
+    # Model selector
+    st.session_state["selected_model"] = st.selectbox(
+        "Model",
+        MODELS,
+        index=MODELS.index(st.session_state["selected_model"]),
+        label_visibility="collapsed",
+    )
+
+    st.divider()
+
+    # Chat messages
+    chat_container = st.container(height=420)
+    with chat_container:
+        for msg in st.session_state["messages"]:
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+    # Chat input
+    user_input = st.chat_input("Ask anything…", key="chat_input")
+    if user_input:
+        # If a file is open, include its content as context
+        context_note = ""
+        if st.session_state["selected_file"] and st.session_state["file_content"]:
+            fname = Path(st.session_state["selected_file"]).name
+            context_note = f" (context: {fname})"
+
+        st.session_state["messages"].append({
+            "role": "user",
+            "content": user_input + context_note,
+        })
+        response = call_llm(user_input, model=st.session_state["selected_model"])
+        st.session_state["messages"].append({"role": "assistant", "content": response})
+        st.rerun()
+
+    # Clear chat
+    if st.session_state["messages"]:
+        if st.button("🗑 Clear chat", use_container_width=True, key="clear_chat"):
+            st.session_state["messages"] = []
+            st.rerun()
