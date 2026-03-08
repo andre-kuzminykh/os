@@ -1,387 +1,517 @@
-"""PlusFlow — workflow builder page for Streamlit."""
+"""PlusFlow v0.2 — Task Board + Flow View page."""
 
 from __future__ import annotations
 
 import streamlit as st
 
 from workflow_models import (
-    TOOL_CATALOG,
-    NodeStatus,
-    WorkflowStatus,
-    add_next_step,
-    add_parallel_step,
-    add_start_node,
-    delete_node,
-    delete_workflow_file,
-    get_levels,
-    get_root_nodes,
-    list_workflows,
-    load_workflow,
-    new_workflow,
-    reset_workflow,
-    run_workflow,
-    save_workflow,
+    STATUSES,
+    STATUS_ICONS,
+    add_task,
+    can_run_task,
+    delete_board_file,
+    delete_task,
+    get_all_task_titles,
+    get_blocked_by,
+    get_children,
+    get_root_tasks,
+    list_boards,
+    load_board,
+    new_board,
+    new_task,
+    reset_board,
+    run_all_tasks,
+    run_task,
+    save_board,
 )
 
-# ---------------------------------------------------------------------------
-# Session state keys for flow page
-# ---------------------------------------------------------------------------
-_FLOW_DEFAULTS = {
-    "wf": None,              # current workflow dict
-    "wf_selected_node": None, # selected node id
-    "wf_adding": None,        # ("next", parent_id) or ("parallel", parent_id)
-}
 
-for k, v in _FLOW_DEFAULTS.items():
+# ---------------------------------------------------------------------------
+# Session state
+# ---------------------------------------------------------------------------
+_DEFAULTS = {
+    "board": None,
+    "board_selected_task": None,
+    "board_view": "board",  # "board" or "flow"
+    "board_adding_parent": None,  # parent_id or "__root__"
+}
+for k, v in _DEFAULTS.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 
 # ---------------------------------------------------------------------------
-# Status badge helpers
+# CSS for task cards
 # ---------------------------------------------------------------------------
-_STATUS_COLORS = {
-    "draft": "gray",
-    "ready": "blue",
-    "running": "orange",
-    "success": "green",
-    "failed": "red",
-    "blocked": "yellow",
-    "disabled": "gray",
-    "partial_success": "orange",
-}
-
-_STATUS_ICONS = {
-    "draft": "⚪",
-    "ready": "🔵",
-    "running": "🟠",
-    "success": "🟢",
-    "failed": "🔴",
-    "blocked": "🟡",
-    "disabled": "⚫",
-    "partial_success": "🟠",
-}
-
-
-def _badge(status: str) -> str:
-    icon = _STATUS_ICONS.get(status, "⚪")
-    return f"{icon} {status}"
+def _inject_css():
+    st.markdown("""
+    <style>
+    .task-card {
+        border: 1px solid #444;
+        border-radius: 8px;
+        padding: 10px 14px;
+        margin: 4px 0;
+        cursor: pointer;
+    }
+    .task-card:hover { border-color: #508cff; }
+    .task-card-selected { border: 2px solid #508cff; background: rgba(80,140,255,0.08); }
+    .task-card-todo { border-left: 4px solid #888; }
+    .task-card-inprogress { border-left: 4px solid #f39c12; }
+    .task-card-done { border-left: 4px solid #2ecc71; }
+    .task-card .task-title { font-weight: 600; font-size: 0.95rem; }
+    .task-card .task-meta { font-size: 0.8rem; color: #999; margin-top: 2px; }
+    .indent-1 { margin-left: 24px; }
+    .indent-2 { margin-left: 48px; }
+    .indent-3 { margin-left: 72px; }
+    </style>
+    """, unsafe_allow_html=True)
 
 
-def _tool_name(tool_id: str) -> str:
-    for t in TOOL_CATALOG:
-        if t["id"] == tool_id:
-            return t["name"]
-    return "No tool"
+def _status_css(status: str) -> str:
+    return {
+        "To Do": "task-card-todo",
+        "In Progress": "task-card-inprogress",
+        "Done": "task-card-done",
+    }.get(status, "")
 
 
 # ---------------------------------------------------------------------------
-# Render: workflow list (when no workflow is open)
+# Board list page
 # ---------------------------------------------------------------------------
-def _render_workflow_list():
-    st.markdown("### Workflows")
+def _render_board_list():
+    st.markdown("### Task Boards")
 
     col1, col2 = st.columns([3, 1])
     with col1:
-        wf_name = st.text_input("New workflow name", placeholder="My Workflow", label_visibility="collapsed")
+        name = st.text_input("Board name", placeholder="Product Research", label_visibility="collapsed")
     with col2:
-        if st.button("+ Create", use_container_width=True):
-            name = wf_name.strip() if wf_name else "Untitled Workflow"
-            wf = new_workflow(name)
-            save_workflow(wf)
-            st.session_state["wf"] = wf
+        if st.button("+ New Board", use_container_width=True):
+            b = new_board(name.strip() if name else "Untitled Board")
+            save_board(b)
+            st.session_state["board"] = b
             st.rerun()
 
     st.divider()
 
-    wfs = list_workflows()
-    if not wfs:
-        st.info("No workflows yet. Create one above.")
+    boards = list_boards()
+    if not boards:
+        st.info("No boards yet. Create one above.")
         return
 
-    for w in wfs:
-        c1, c2, c3 = st.columns([3, 1, 1])
+    for b in boards:
+        c1, c2, c3 = st.columns([4, 1, 0.5])
         with c1:
-            if st.button(f"{_badge(w['status'])}  {w['name']}", key=f"wf_open_{w['id']}", use_container_width=True):
-                loaded = load_workflow(w["id"])
+            progress = f"{b['done']}/{b['total']}" if b["total"] else "empty"
+            if st.button(f"{b['name']}  ({progress})", key=f"bopen_{b['id']}", use_container_width=True):
+                loaded = load_board(b["id"])
                 if loaded:
-                    st.session_state["wf"] = loaded
-                    st.session_state["wf_selected_node"] = None
+                    st.session_state["board"] = loaded
+                    st.session_state["board_selected_task"] = None
                     st.rerun()
         with c2:
-            st.caption(w["status"])
+            st.caption(f"{b['done']}/{b['total']}")
         with c3:
-            if st.button("🗑", key=f"wf_del_{w['id']}"):
-                delete_workflow_file(w["id"])
+            if st.button("🗑", key=f"bdel_{b['id']}"):
+                delete_board_file(b["id"])
                 st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Render: single task card
+# Render task card (HTML)
 # ---------------------------------------------------------------------------
-def _render_node_card(wf: dict, nid: str, indent: int = 0):
-    node = wf["nodes"][nid]
-    is_selected = st.session_state["wf_selected_node"] == nid
-    status = node["status"]
+def _render_task_card_html(board: dict, tid: str, depth: int = 0):
+    """Render a task card as HTML + action buttons, then recurse for children."""
+    task = board["tasks"][tid]
+    is_selected = st.session_state["board_selected_task"] == tid
+    status = task["status"]
+    icon = STATUS_ICONS.get(status, "⬜")
 
-    # Card container
-    border_color = {
-        "success": "#2ecc71", "failed": "#e74c3c", "running": "#f39c12",
-        "blocked": "#f1c40f", "disabled": "#7f8c8d",
-    }.get(status, "#508cff" if is_selected else "#444")
+    selected_cls = "task-card-selected" if is_selected else ""
+    status_cls = _status_css(status)
+    indent_cls = f"indent-{min(depth, 3)}" if depth > 0 else ""
 
-    bg = "rgba(80,140,255,0.08)" if is_selected else "rgba(255,255,255,0.02)"
+    # Dependencies info
+    dep_names = []
+    for dep_id in task.get("depends_on", []):
+        dep = board["tasks"].get(dep_id)
+        if dep:
+            dep_names.append(dep["title"])
+    dep_text = f"Depends on: {', '.join(dep_names)}" if dep_names else ""
+
+    # Blocked?
+    blocked = get_blocked_by(board, tid)
+    blocked_text = ""
+    if blocked:
+        blocked_names = [board["tasks"][b]["title"] for b in blocked if b in board["tasks"]]
+        blocked_text = f"<span style='color:#e74c3c;font-size:0.8rem;'>Blocked by: {', '.join(blocked_names)}</span>"
+
+    # Artifact info
+    art_text = ""
+    if task.get("output_artifact"):
+        art_text = f"Artifact: {task['output_artifact']}"
 
     st.markdown(
-        f"""<div style="
-            border: 2px solid {border_color};
-            border-radius: 8px;
-            padding: 12px;
-            margin: 4px 0 4px {indent * 20}px;
-            background: {bg};
-        ">
-            <div style="display:flex; align-items:center; gap:8px;">
-                <span>{_badge(status)}</span>
-                <strong>{node['title']}</strong>
-                <span style="color:#888; font-size:0.85em;">— {_tool_name(node['tool_id'])}</span>
+        f"""<div class="task-card {status_cls} {selected_cls} {indent_cls}">
+            <div class="task-title">{icon} {task['title']}</div>
+            <div class="task-meta">
+                {dep_text}
+                {'&nbsp;&nbsp;' if dep_text and art_text else ''}{art_text}
             </div>
+            {blocked_text}
         </div>""",
         unsafe_allow_html=True,
     )
 
-    # Action buttons row
-    cols = st.columns([1, 1, 1, 1, 1])
+    # Action buttons
+    cols = st.columns([1, 1, 1, 1])
     with cols[0]:
-        if st.button("Select", key=f"sel_{nid}", use_container_width=True):
-            st.session_state["wf_selected_node"] = nid
+        if st.button("Open", key=f"topen_{tid}", use_container_width=True):
+            st.session_state["board_selected_task"] = tid
             st.rerun()
     with cols[1]:
-        if st.button("+ Next", key=f"add_next_{nid}", use_container_width=True):
-            st.session_state["wf_adding"] = ("next", nid)
-            st.rerun()
+        if status != "Done":
+            if can_run_task(board, tid):
+                if st.button("Run", key=f"trun_{tid}", use_container_width=True):
+                    run_task(board, tid)
+                    save_board(board)
+                    st.session_state["board_selected_task"] = tid
+                    st.rerun()
+            else:
+                st.button("Run", key=f"trun_{tid}", use_container_width=True, disabled=True)
     with cols[2]:
-        if st.button("+ Parallel", key=f"add_par_{nid}", use_container_width=True):
-            st.session_state["wf_adding"] = ("parallel", nid)
+        if st.button("+ Sub", key=f"tsub_{tid}", use_container_width=True):
+            st.session_state["board_adding_parent"] = tid
             st.rerun()
     with cols[3]:
-        if st.button("🗑", key=f"del_{nid}", use_container_width=True):
-            delete_node(wf, nid)
-            if st.session_state["wf_selected_node"] == nid:
-                st.session_state["wf_selected_node"] = None
-            save_workflow(wf)
-            st.rerun()
-    with cols[4]:
-        disabled = node["status"] == NodeStatus.DISABLED.value
-        label = "Enable" if disabled else "Disable"
-        if st.button(label, key=f"toggle_{nid}", use_container_width=True):
-            node["status"] = NodeStatus.DRAFT.value if disabled else NodeStatus.DISABLED.value
-            save_workflow(wf)
+        if st.button("🗑", key=f"tdel_{tid}", use_container_width=True):
+            delete_task(board, tid)
+            if st.session_state["board_selected_task"] == tid:
+                st.session_state["board_selected_task"] = None
+            save_board(board)
             st.rerun()
 
+    # Recurse children
+    children = get_children(board, tid)
+    for cid in children:
+        _render_task_card_html(board, cid, depth + 1)
+
 
 # ---------------------------------------------------------------------------
-# Render: DAG as card tree (BFS by levels)
+# Board view
 # ---------------------------------------------------------------------------
-def _render_dag(wf: dict):
-    if not wf["nodes"]:
-        st.info("Workflow is empty. Add a start task below.")
+def _render_board_view(board: dict):
+    roots = get_root_tasks(board)
+
+    if not roots and not st.session_state.get("board_adding_parent"):
+        st.info("No tasks yet. Add a root task below.")
+        st.session_state["board_adding_parent"] = "__root__"
+
+    for tid in roots:
+        _render_task_card_html(board, tid, depth=0)
+
+    # Add task form
+    _render_add_task_form(board)
+
+
+# ---------------------------------------------------------------------------
+# Add task form
+# ---------------------------------------------------------------------------
+def _render_add_task_form(board: dict):
+    adding = st.session_state.get("board_adding_parent")
+
+    # Always show "Add root task" button
+    if adding is None:
+        if st.button("+ Add root task", key="add_root", use_container_width=True):
+            st.session_state["board_adding_parent"] = "__root__"
+            st.rerun()
         return
 
-    levels = get_levels(wf)
-    max_lvl = max(levels.values()) if levels else 0
+    parent_label = "root level"
+    if adding != "__root__":
+        parent = board["tasks"].get(adding)
+        parent_label = f"under '{parent['title']}'" if parent else "root level"
 
-    for lvl in range(max_lvl + 1):
-        nodes_at_level = [nid for nid, l in levels.items() if l == lvl]
-        if not nodes_at_level:
-            continue
+    st.markdown(f"**Add task** ({parent_label})")
 
-        if lvl > 0:
-            # Connection indicator
-            st.markdown(
-                '<div style="text-align:center; color:#666; font-size:1.2em;">↓</div>',
-                unsafe_allow_html=True,
-            )
+    with st.form("add_task_form", clear_on_submit=True):
+        title = st.text_input("Title", placeholder="e.g. Analyze market")
+        prompt = st.text_area("Prompt / description", placeholder="What should this task do?", height=80)
+        output_art = st.text_input("Output artifact name", placeholder="e.g. market_analysis.md")
 
-        # Render nodes at this level side by side if multiple (parallel branches)
-        if len(nodes_at_level) == 1:
-            _render_node_card(wf, nodes_at_level[0])
-        else:
-            cols = st.columns(len(nodes_at_level))
-            for i, nid in enumerate(nodes_at_level):
-                with cols[i]:
-                    _render_node_card(wf, nid)
+        # Dependencies
+        all_titles = get_all_task_titles(board)
+        dep_options = {tid: t for tid, t in all_titles.items() if tid != adding}
+        dep_selected = st.multiselect("Depends on", options=list(dep_options.keys()),
+                                       format_func=lambda x: dep_options.get(x, x))
 
-
-# ---------------------------------------------------------------------------
-# Render: add-step form
-# ---------------------------------------------------------------------------
-def _render_add_form(wf: dict):
-    adding = st.session_state.get("wf_adding")
-    if not adding:
-        return
-
-    mode, parent_id = adding
-    parent = wf["nodes"].get(parent_id)
-    parent_title = parent["title"] if parent else "?"
-    label = "next step" if mode == "next" else "parallel step"
-
-    st.markdown(f"**Add {label} after:** {parent_title}")
-
-    with st.form("add_step_form", clear_on_submit=True):
-        title = st.text_input("Task title", placeholder="e.g. Summarize PRD")
-        tool_options = ["(no tool)"] + [t["name"] for t in TOOL_CATALOG]
-        tool_choice = st.selectbox("Tool", tool_options)
         c1, c2 = st.columns(2)
         with c1:
-            submitted = st.form_submit_button("Add", use_container_width=True)
+            submitted = st.form_submit_button("Add task", use_container_width=True)
         with c2:
             cancelled = st.form_submit_button("Cancel", use_container_width=True)
 
         if submitted and title.strip():
-            tool_id = ""
-            if tool_choice != "(no tool)":
-                for t in TOOL_CATALOG:
-                    if t["name"] == tool_choice:
-                        tool_id = t["id"]
-                        break
-            if mode == "next":
-                add_next_step(wf, parent_id, title.strip(), tool_id)
-            else:
-                add_parallel_step(wf, parent_id, title.strip(), tool_id)
-            save_workflow(wf)
-            st.session_state["wf_adding"] = None
+            parent_id = None if adding == "__root__" else adding
+            task = new_task(
+                title=title.strip(),
+                parent_id=parent_id,
+                prompt=prompt,
+                depends_on=dep_selected,
+                output_artifact=output_art.strip(),
+            )
+            add_task(board, task)
+            save_board(board)
+            st.session_state["board_adding_parent"] = None
             st.rerun()
 
         if cancelled:
-            st.session_state["wf_adding"] = None
+            st.session_state["board_adding_parent"] = None
             st.rerun()
 
 
 # ---------------------------------------------------------------------------
-# Render: node detail panel
+# Flow view (read-only graph overview)
 # ---------------------------------------------------------------------------
-def _render_node_detail(wf: dict):
-    nid = st.session_state.get("wf_selected_node")
-    if not nid or nid not in wf["nodes"]:
+def _render_flow_view(board: dict):
+    if not board["tasks"]:
+        st.info("No tasks to visualize.")
+        return
+
+    st.markdown("#### Dependency & hierarchy graph")
+
+    # Build a text-based graph visualization
+    lines = []
+    roots = get_root_tasks(board)
+
+    def _render_tree(tid: str, prefix: str = "", is_last: bool = True):
+        task = board["tasks"][tid]
+        icon = STATUS_ICONS.get(task["status"], "⬜")
+        connector = "└─ " if is_last else "├─ "
+        dep_info = ""
+        if task["depends_on"]:
+            dep_names = [board["tasks"][d]["title"] for d in task["depends_on"] if d in board["tasks"]]
+            if dep_names:
+                dep_info = f"  ← [{', '.join(dep_names)}]"
+        lines.append(f"{prefix}{connector}{icon} **{task['title']}**{dep_info}")
+        children = get_children(board, tid)
+        for i, cid in enumerate(children):
+            child_prefix = prefix + ("   " if is_last else "│  ")
+            _render_tree(cid, child_prefix, i == len(children) - 1)
+
+    for i, rid in enumerate(roots):
+        task = board["tasks"][rid]
+        icon = STATUS_ICONS.get(task["status"], "⬜")
+        dep_info = ""
+        if task["depends_on"]:
+            dep_names = [board["tasks"][d]["title"] for d in task["depends_on"] if d in board["tasks"]]
+            if dep_names:
+                dep_info = f"  ← [{', '.join(dep_names)}]"
+        lines.append(f"{icon} **{task['title']}**{dep_info}")
+        children = get_children(board, rid)
+        for j, cid in enumerate(children):
+            _render_tree(cid, "  ", j == len(children) - 1)
+        if i < len(roots) - 1:
+            lines.append("")
+
+    st.markdown("\n\n".join(lines))
+
+    # Dependency arrows summary
+    st.divider()
+    st.markdown("#### Dependency links")
+    has_deps = False
+    for tid, task in board["tasks"].items():
+        if task["depends_on"]:
+            for dep_id in task["depends_on"]:
+                dep = board["tasks"].get(dep_id)
+                if dep:
+                    has_deps = True
+                    dep_status = STATUS_ICONS.get(dep["status"], "⬜")
+                    task_status = STATUS_ICONS.get(task["status"], "⬜")
+                    st.markdown(f"{dep_status} {dep['title']}  **→**  {task_status} {task['title']}")
+    if not has_deps:
+        st.caption("No dependencies defined between tasks.")
+
+
+# ---------------------------------------------------------------------------
+# Task detail panel
+# ---------------------------------------------------------------------------
+def _render_task_detail(board: dict):
+    tid = st.session_state.get("board_selected_task")
+    if not tid or tid not in board["tasks"]:
         st.caption("Select a task to see details.")
         return
 
-    node = wf["nodes"][nid]
+    task = board["tasks"][tid]
+    icon = STATUS_ICONS.get(task["status"], "⬜")
 
-    st.markdown(f"#### {node['title']}")
-    st.caption(f"ID: {nid} | Status: {_badge(node['status'])}")
+    st.markdown(f"#### {icon} {task['title']}")
 
-    # Editable fields
-    new_title = st.text_input("Title", value=node["title"], key=f"edit_title_{nid}")
-    new_desc = st.text_area("Description", value=node.get("description", ""), key=f"edit_desc_{nid}", height=80)
+    # Status
+    current_idx = STATUSES.index(task["status"]) if task["status"] in STATUSES else 0
+    new_status = st.radio("Status", STATUSES, index=current_idx, key=f"det_status_{tid}", horizontal=True)
 
-    tool_names = [t["name"] for t in TOOL_CATALOG]
-    current_tool_name = _tool_name(node["tool_id"])
-    tool_idx = tool_names.index(current_tool_name) if current_tool_name in tool_names else 0
-    new_tool = st.selectbox("Tool", tool_names, index=tool_idx, key=f"edit_tool_{nid}")
+    # Title
+    new_title = st.text_input("Title", value=task["title"], key=f"det_title_{tid}")
 
-    if st.button("Save changes", key=f"save_node_{nid}", use_container_width=True):
-        node["title"] = new_title
-        node["description"] = new_desc
-        for t in TOOL_CATALOG:
-            if t["name"] == new_tool:
-                node["tool_id"] = t["id"]
-                break
-        save_workflow(wf)
+    # Prompt
+    new_prompt = st.text_area("Prompt", value=task.get("prompt", ""), key=f"det_prompt_{tid}", height=100)
+
+    # Output artifact name
+    new_artifact = st.text_input("Output artifact", value=task.get("output_artifact", ""), key=f"det_art_{tid}")
+
+    # Parent
+    all_titles = get_all_task_titles(board)
+    parent_options = {"__none__": "(no parent)"}
+    for t_id, t_title in all_titles.items():
+        if t_id != tid:
+            parent_options[t_id] = t_title
+    current_parent = task.get("parent_id") or "__none__"
+    if current_parent not in parent_options:
+        current_parent = "__none__"
+    parent_keys = list(parent_options.keys())
+    new_parent = st.selectbox(
+        "Parent task",
+        parent_keys,
+        index=parent_keys.index(current_parent),
+        format_func=lambda x: parent_options[x],
+        key=f"det_parent_{tid}",
+    )
+
+    # Dependencies
+    dep_options = {t_id: t_title for t_id, t_title in all_titles.items() if t_id != tid}
+    current_deps = [d for d in task.get("depends_on", []) if d in dep_options]
+    new_deps = st.multiselect(
+        "Depends on",
+        options=list(dep_options.keys()),
+        default=current_deps,
+        format_func=lambda x: dep_options.get(x, x),
+        key=f"det_deps_{tid}",
+    )
+
+    # Input artifacts (file names)
+    input_arts = st.text_input(
+        "Input artifacts (comma-separated)",
+        value=", ".join(task.get("input_artifacts", [])),
+        key=f"det_inputs_{tid}",
+    )
+
+    # Save button
+    if st.button("Save changes", key=f"det_save_{tid}", use_container_width=True):
+        task["title"] = new_title
+        task["prompt"] = new_prompt
+        task["status"] = new_status
+        task["output_artifact"] = new_artifact
+        task["parent_id"] = None if new_parent == "__none__" else new_parent
+        task["depends_on"] = new_deps
+        task["input_artifacts"] = [a.strip() for a in input_arts.split(",") if a.strip()]
+        task["updated_at"] = __import__("datetime").datetime.now().isoformat(timespec="seconds")
+        save_board(board)
         st.rerun()
 
     st.divider()
 
-    # Artifacts
-    st.markdown("**Input artifact**")
-    if node.get("input_artifact_id") and node["input_artifact_id"] in wf["artifacts"]:
-        art = wf["artifacts"][node["input_artifact_id"]]
-        with st.expander(f"📥 {art['name']}"):
-            st.code(art["content"])
-    else:
-        st.caption("No input artifact")
+    # Blocked info
+    blocked = get_blocked_by(board, tid)
+    if blocked:
+        blocked_names = [board["tasks"][b]["title"] for b in blocked if b in board["tasks"]]
+        st.warning(f"Blocked by: {', '.join(blocked_names)}")
 
-    st.markdown("**Output artifact**")
-    if node.get("output_artifact_id") and node["output_artifact_id"] in wf["artifacts"]:
-        art = wf["artifacts"][node["output_artifact_id"]]
-        with st.expander(f"📤 {art['name']}"):
-            st.code(art["content"])
-    else:
-        st.caption("No output artifact")
+    # Run button
+    if task["status"] != "Done":
+        if can_run_task(board, tid):
+            if st.button("▶ Run task", key=f"det_run_{tid}", use_container_width=True):
+                run_task(board, tid)
+                save_board(board)
+                st.rerun()
+        else:
+            st.button("▶ Run task", key=f"det_run_{tid}", use_container_width=True, disabled=True)
 
-
-# ---------------------------------------------------------------------------
-# Main render function
-# ---------------------------------------------------------------------------
-def render_flow_page():
-    wf = st.session_state.get("wf")
-
-    if wf is None:
-        _render_workflow_list()
-        return
-
-    # ---- Toolbar ----
-    toolbar = st.columns([0.5, 3, 1, 1, 1, 1])
-    with toolbar[0]:
-        if st.button("←", key="wf_back", use_container_width=True):
-            save_workflow(wf)
-            st.session_state["wf"] = None
-            st.session_state["wf_selected_node"] = None
-            st.session_state["wf_adding"] = None
-            st.rerun()
-    with toolbar[1]:
-        st.markdown(f"### {wf['name']}  {_badge(wf['status'])}")
-    with toolbar[2]:
-        if not wf["nodes"]:
-            pass
-        elif st.button("▶ Run", key="wf_run", use_container_width=True):
-            reset_workflow(wf)
-            run_workflow(wf)
-            save_workflow(wf)
-            st.rerun()
-    with toolbar[3]:
-        if wf["nodes"] and st.button("↺ Reset", key="wf_reset", use_container_width=True):
-            reset_workflow(wf)
-            save_workflow(wf)
-            st.rerun()
-    with toolbar[4]:
-        if st.button("💾 Save", key="wf_save", use_container_width=True):
-            save_workflow(wf)
-            st.toast("Workflow saved!")
-    with toolbar[5]:
-        new_name = st.text_input("Rename", value=wf["name"], key="wf_rename", label_visibility="collapsed")
-        if new_name != wf["name"]:
-            wf["name"] = new_name
+    if st.button("Mark Done", key=f"det_done_{tid}", use_container_width=True):
+        task["status"] = "Done"
+        save_board(board)
+        st.rerun()
 
     st.divider()
 
-    # ---- Layout: DAG view + Detail panel ----
-    dag_col, detail_col = st.columns([3, 1.5])
+    # Output
+    st.markdown("**Output**")
+    if task.get("output_content"):
+        st.markdown(task["output_content"])
+    else:
+        st.caption("No output yet. Run the task to generate output.")
 
-    with dag_col:
-        # Add start task button
-        if not wf["nodes"]:
-            st.markdown("#### Start building your workflow")
-            with st.form("start_form", clear_on_submit=True):
-                title = st.text_input("First task title", placeholder="e.g. Collect PRD Input")
-                tool_options = ["(no tool)"] + [t["name"] for t in TOOL_CATALOG]
-                tool_choice = st.selectbox("Tool", tool_options)
-                if st.form_submit_button("+ Add start task", use_container_width=True):
-                    if title.strip():
-                        tool_id = ""
-                        if tool_choice != "(no tool)":
-                            for t in TOOL_CATALOG:
-                                if t["name"] == tool_choice:
-                                    tool_id = t["id"]
-                                    break
-                        add_start_node(wf, title.strip(), tool_id)
-                        save_workflow(wf)
-                        st.rerun()
+
+# ---------------------------------------------------------------------------
+# Main render
+# ---------------------------------------------------------------------------
+def render_flow_page():
+    _inject_css()
+
+    board = st.session_state.get("board")
+    if board is None:
+        _render_board_list()
+        return
+
+    # Toolbar
+    tb = st.columns([0.4, 2.5, 1, 1, 1, 1, 1])
+    with tb[0]:
+        if st.button("←", key="board_back", use_container_width=True):
+            save_board(board)
+            st.session_state["board"] = None
+            st.session_state["board_selected_task"] = None
+            st.session_state["board_adding_parent"] = None
+            st.rerun()
+    with tb[1]:
+        total = len(board["tasks"])
+        done = sum(1 for t in board["tasks"].values() if t["status"] == "Done")
+        st.markdown(f"### {board['name']}  ({done}/{total})")
+    with tb[2]:
+        view = st.session_state.get("board_view", "board")
+        if view == "board":
+            if st.button("Flow View", key="to_flow", use_container_width=True):
+                st.session_state["board_view"] = "flow"
+                st.rerun()
         else:
-            _render_dag(wf)
-            st.markdown("---")
-            _render_add_form(wf)
+            if st.button("Board View", key="to_board", use_container_width=True):
+                st.session_state["board_view"] = "board"
+                st.rerun()
+    with tb[3]:
+        if board["tasks"]:
+            if st.button("▶ Run All", key="run_all", use_container_width=True):
+                run_all_tasks(board)
+                save_board(board)
+                st.rerun()
+    with tb[4]:
+        if board["tasks"]:
+            if st.button("↺ Reset", key="reset_all", use_container_width=True):
+                reset_board(board)
+                save_board(board)
+                st.rerun()
+    with tb[5]:
+        if st.button("💾 Save", key="board_save", use_container_width=True):
+            save_board(board)
+            st.toast("Board saved!")
+    with tb[6]:
+        new_name = st.text_input("Name", value=board["name"], key="board_rename", label_visibility="collapsed")
+        if new_name != board["name"]:
+            board["name"] = new_name
 
-    with detail_col:
-        st.markdown("#### Task details")
-        _render_node_detail(wf)
+    st.divider()
+
+    # Main layout
+    view = st.session_state.get("board_view", "board")
+
+    if view == "flow":
+        main_col, detail_col = st.columns([3, 1.5])
+        with main_col:
+            _render_flow_view(board)
+        with detail_col:
+            st.markdown("#### Task details")
+            _render_task_detail(board)
+    else:
+        main_col, detail_col = st.columns([3, 1.5])
+        with main_col:
+            _render_board_view(board)
+        with detail_col:
+            st.markdown("#### Task details")
+            _render_task_detail(board)

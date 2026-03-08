@@ -1,97 +1,24 @@
-"""PlusFlow — domain models for workflow builder."""
+"""PlusFlow v0.2 — hierarchical task board models."""
 
 from __future__ import annotations
 
 import json
 import uuid
 from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any
 
 
 # ---------------------------------------------------------------------------
-# Enums
+# Constants
 # ---------------------------------------------------------------------------
-class NodeStatus(str, Enum):
-    DRAFT = "draft"
-    READY = "ready"
-    RUNNING = "running"
-    SUCCESS = "success"
-    FAILED = "failed"
-    BLOCKED = "blocked"
-    DISABLED = "disabled"
+STATUSES = ["To Do", "In Progress", "Done"]
 
-
-class WorkflowStatus(str, Enum):
-    DRAFT = "draft"
-    RUNNING = "running"
-    PARTIAL_SUCCESS = "partial_success"
-    SUCCESS = "success"
-    FAILED = "failed"
-
-
-# ---------------------------------------------------------------------------
-# Tool catalog
-# ---------------------------------------------------------------------------
-TOOL_CATALOG: list[dict[str, Any]] = [
-    {
-        "id": "input_parser",
-        "name": "Input Parser",
-        "description": "Parse raw input into structured data",
-        "input_type": "text",
-        "output_type": "structured",
-    },
-    {
-        "id": "llm_generator",
-        "name": "LLM Generator",
-        "description": "Generate text using an LLM model",
-        "input_type": "structured",
-        "output_type": "text",
-    },
-    {
-        "id": "summarizer",
-        "name": "Summarizer",
-        "description": "Summarize long text into key points",
-        "input_type": "text",
-        "output_type": "text",
-    },
-    {
-        "id": "risk_extractor",
-        "name": "Risk Extractor",
-        "description": "Extract risks and concerns from text",
-        "input_type": "text",
-        "output_type": "structured",
-    },
-    {
-        "id": "formatter",
-        "name": "Formatter",
-        "description": "Format data into a specific output template",
-        "input_type": "structured",
-        "output_type": "text",
-    },
-    {
-        "id": "validator",
-        "name": "Validator",
-        "description": "Validate data against rules or schema",
-        "input_type": "structured",
-        "output_type": "structured",
-    },
-    {
-        "id": "merger",
-        "name": "Merger",
-        "description": "Merge multiple inputs into one output",
-        "input_type": "structured",
-        "output_type": "structured",
-    },
-    {
-        "id": "classifier",
-        "name": "Classifier",
-        "description": "Classify input into categories",
-        "input_type": "text",
-        "output_type": "structured",
-    },
-]
+STATUS_ICONS = {
+    "To Do": "⬜",
+    "In Progress": "🔶",
+    "Done": "✅",
+}
 
 
 def _uid() -> str:
@@ -103,273 +30,212 @@ def _now() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Core data helpers  (plain dicts — easy to serialize)
+# Task board
 # ---------------------------------------------------------------------------
 
-def make_node(
+def new_board(name: str = "Untitled Board") -> dict:
+    return {
+        "id": _uid(),
+        "name": name,
+        "tasks": {},       # id -> task dict
+        "created_at": _now(),
+        "updated_at": _now(),
+    }
+
+
+def new_task(
     title: str,
-    tool_id: str = "",
+    parent_id: str | None = None,
     description: str = "",
-    parent_ids: list[str] | None = None,
+    prompt: str = "",
+    depends_on: list[str] | None = None,
+    input_artifacts: list[str] | None = None,
+    output_artifact: str = "",
 ) -> dict:
     return {
         "id": _uid(),
         "title": title,
         "description": description,
-        "tool_id": tool_id,
-        "parent_ids": parent_ids or [],
-        "child_ids": [],
-        "status": NodeStatus.DRAFT.value,
-        "input_artifact_id": None,
-        "output_artifact_id": None,
-        "created_at": _now(),
-        "updated_at": _now(),
-    }
-
-
-def make_artifact(name: str, producer_id: str, content: str = "") -> dict:
-    return {
-        "id": _uid(),
-        "name": name,
-        "producer_id": producer_id,
-        "consumer_ids": [],
-        "content": content,
-        "preview": content[:200] if content else "",
-        "created_at": _now(),
-    }
-
-
-def make_edge(from_id: str, to_id: str, artifact_id: str = "") -> dict:
-    return {
-        "id": _uid(),
-        "from_id": from_id,
-        "to_id": to_id,
-        "artifact_id": artifact_id,
-    }
-
-
-def new_workflow(name: str = "Untitled Workflow") -> dict:
-    return {
-        "id": _uid(),
-        "name": name,
-        "status": WorkflowStatus.DRAFT.value,
-        "nodes": {},
-        "artifacts": {},
-        "edges": [],
+        "prompt": prompt,
+        "status": "To Do",
+        "parent_id": parent_id,
+        "depends_on": depends_on or [],
+        "input_artifacts": input_artifacts or [],
+        "output_artifact": output_artifact,
+        "output_content": "",
         "created_at": _now(),
         "updated_at": _now(),
     }
 
 
 # ---------------------------------------------------------------------------
-# DAG operations
+# Board operations
 # ---------------------------------------------------------------------------
 
-def add_start_node(wf: dict, title: str, tool_id: str = "") -> str:
-    node = make_node(title, tool_id=tool_id)
-    wf["nodes"][node["id"]] = node
-    wf["updated_at"] = _now()
-    return node["id"]
+def add_task(board: dict, task: dict) -> str:
+    board["tasks"][task["id"]] = task
+    board["updated_at"] = _now()
+    return task["id"]
 
 
-def add_next_step(wf: dict, parent_id: str, title: str, tool_id: str = "") -> str:
-    node = make_node(title, tool_id=tool_id, parent_ids=[parent_id])
-    wf["nodes"][node["id"]] = node
-    wf["nodes"][parent_id]["child_ids"].append(node["id"])
-    edge = make_edge(parent_id, node["id"])
-    wf["edges"].append(edge)
-    wf["updated_at"] = _now()
-    return node["id"]
-
-
-def add_parallel_step(wf: dict, parent_id: str, title: str, tool_id: str = "") -> str:
-    """Same as add_next_step — creates another child from the same parent."""
-    return add_next_step(wf, parent_id, title, tool_id)
-
-
-def delete_node(wf: dict, node_id: str) -> list[str]:
-    """Delete a node and all its descendants. Returns list of deleted ids."""
-    deleted: list[str] = []
-    _collect_descendants(wf, node_id, deleted)
-    for nid in deleted:
-        node = wf["nodes"].pop(nid, None)
-        if node:
-            for pid in node["parent_ids"]:
-                parent = wf["nodes"].get(pid)
-                if parent and nid in parent["child_ids"]:
-                    parent["child_ids"].remove(nid)
-            # Remove artifacts
-            for akey in ("input_artifact_id", "output_artifact_id"):
-                aid = node.get(akey)
-                if aid and aid in wf["artifacts"]:
-                    del wf["artifacts"][aid]
-    # Remove edges referencing deleted nodes
-    wf["edges"] = [
-        e for e in wf["edges"]
-        if e["from_id"] not in deleted and e["to_id"] not in deleted
-    ]
-    wf["updated_at"] = _now()
+def delete_task(board: dict, task_id: str) -> list[str]:
+    """Delete task and all its children. Returns deleted ids."""
+    deleted = _collect_children(board, task_id)
+    for tid in deleted:
+        board["tasks"].pop(tid, None)
+        # Remove from other tasks' depends_on
+        for t in board["tasks"].values():
+            if tid in t["depends_on"]:
+                t["depends_on"].remove(tid)
+    board["updated_at"] = _now()
     return deleted
 
 
-def _collect_descendants(wf: dict, nid: str, acc: list[str]):
-    acc.append(nid)
-    node = wf["nodes"].get(nid)
-    if node:
-        for cid in list(node["child_ids"]):
-            _collect_descendants(wf, cid, acc)
+def _collect_children(board: dict, tid: str) -> list[str]:
+    result = [tid]
+    for t in board["tasks"].values():
+        if t["parent_id"] == tid:
+            result.extend(_collect_children(board, t["id"]))
+    return result
 
 
-def _has_cycle(wf: dict) -> bool:
-    visited: set[str] = set()
-    rec_stack: set[str] = set()
-
-    def dfs(nid: str) -> bool:
-        visited.add(nid)
-        rec_stack.add(nid)
-        node = wf["nodes"].get(nid)
-        if node:
-            for cid in node["child_ids"]:
-                if cid not in visited:
-                    if dfs(cid):
-                        return True
-                elif cid in rec_stack:
-                    return True
-        rec_stack.discard(nid)
-        return False
-
-    for nid in wf["nodes"]:
-        if nid not in visited:
-            if dfs(nid):
-                return True
-    return False
+def get_root_tasks(board: dict) -> list[str]:
+    return [tid for tid, t in board["tasks"].items() if not t["parent_id"]]
 
 
-def get_root_nodes(wf: dict) -> list[str]:
-    return [nid for nid, n in wf["nodes"].items() if not n["parent_ids"]]
+def get_children(board: dict, parent_id: str) -> list[str]:
+    return [tid for tid, t in board["tasks"].items() if t["parent_id"] == parent_id]
 
 
-def get_levels(wf: dict) -> dict[str, int]:
-    """Assign each node a level (depth) for rendering."""
-    levels: dict[str, int] = {}
-    roots = get_root_nodes(wf)
-    queue = [(r, 0) for r in roots]
-    while queue:
-        nid, lvl = queue.pop(0)
-        if nid in levels:
-            levels[nid] = max(levels[nid], lvl)
-        else:
-            levels[nid] = lvl
-        node = wf["nodes"].get(nid)
-        if node:
-            for cid in node["child_ids"]:
-                queue.append((cid, lvl + 1))
-    return levels
+def get_blocked_by(board: dict, task_id: str) -> list[str]:
+    """Return list of dependency task ids that are not Done."""
+    task = board["tasks"].get(task_id)
+    if not task:
+        return []
+    return [
+        dep_id for dep_id in task["depends_on"]
+        if dep_id in board["tasks"] and board["tasks"][dep_id]["status"] != "Done"
+    ]
+
+
+def get_all_task_titles(board: dict) -> dict[str, str]:
+    """Return {id: title} for all tasks."""
+    return {tid: t["title"] for tid, t in board["tasks"].items()}
+
+
+def can_run_task(board: dict, task_id: str) -> bool:
+    return len(get_blocked_by(board, task_id)) == 0
 
 
 # ---------------------------------------------------------------------------
-# Mock execution
+# Mock LLM execution
 # ---------------------------------------------------------------------------
 
-def run_workflow(wf: dict) -> None:
-    """Mock-execute the workflow following DAG order."""
-    wf["status"] = WorkflowStatus.RUNNING.value
-    levels = get_levels(wf)
-    sorted_nodes = sorted(levels.keys(), key=lambda x: levels[x])
+def run_task(board: dict, task_id: str, model: str = "GPT-4o") -> str | None:
+    """Execute a task via mock LLM. Returns output content or None if blocked."""
+    task = board["tasks"].get(task_id)
+    if not task:
+        return None
 
-    all_ok = True
-    for nid in sorted_nodes:
-        node = wf["nodes"][nid]
-        if node["status"] == NodeStatus.DISABLED.value:
-            continue
-        # Check parents are done
-        parents_ok = all(
-            wf["nodes"].get(pid, {}).get("status") == NodeStatus.SUCCESS.value
-            for pid in node["parent_ids"]
-        )
-        if not parents_ok and node["parent_ids"]:
-            node["status"] = NodeStatus.BLOCKED.value
-            all_ok = False
-            continue
+    blocked = get_blocked_by(board, task_id)
+    if blocked:
+        return None
 
-        node["status"] = NodeStatus.RUNNING.value
-        # Mock: create output artifact
-        tool = _get_tool(node["tool_id"])
-        tool_name = tool["name"] if tool else "Unknown"
-        out_art = make_artifact(
-            name=f"{node['title']} output",
-            producer_id=nid,
-            content=f"[Mock output from {tool_name}] Processed: {node['title']}",
-        )
-        wf["artifacts"][out_art["id"]] = out_art
-        node["output_artifact_id"] = out_art["id"]
+    task["status"] = "In Progress"
+    task["updated_at"] = _now()
 
-        # Wire input from parent output
-        if node["parent_ids"]:
-            parent = wf["nodes"].get(node["parent_ids"][0])
-            if parent and parent.get("output_artifact_id"):
-                node["input_artifact_id"] = parent["output_artifact_id"]
-                art = wf["artifacts"].get(parent["output_artifact_id"])
-                if art and nid not in art["consumer_ids"]:
-                    art["consumer_ids"].append(nid)
+    # Build context from input artifacts and dependency outputs
+    context_parts = []
+    for dep_id in task["depends_on"]:
+        dep = board["tasks"].get(dep_id)
+        if dep and dep.get("output_content"):
+            context_parts.append(f"[From {dep['title']}]: {dep['output_content']}")
+    for art in task["input_artifacts"]:
+        context_parts.append(f"[Input file]: {art}")
 
-        node["status"] = NodeStatus.SUCCESS.value
-        node["updated_at"] = _now()
+    context = "\n".join(context_parts) if context_parts else "No additional context."
+    prompt = task.get("prompt") or task["title"]
 
-    wf["status"] = WorkflowStatus.SUCCESS.value if all_ok else WorkflowStatus.PARTIAL_SUCCESS.value
-    wf["updated_at"] = _now()
+    # Mock LLM response
+    output = (
+        f"**[{model}]** Task: {task['title']}\n\n"
+        f"Prompt: *{prompt[:120]}*\n\n"
+        f"Context: {context[:200]}\n\n"
+        f"Generated output for '{task['title']}':\n"
+        f"- Analysis point 1\n"
+        f"- Analysis point 2\n"
+        f"- Recommendation\n"
+    )
+
+    task["output_content"] = output
+    task["status"] = "Done"
+    task["updated_at"] = _now()
+    board["updated_at"] = _now()
+    return output
 
 
-def reset_workflow(wf: dict) -> None:
-    """Reset all nodes to draft, clear artifacts."""
-    for node in wf["nodes"].values():
-        node["status"] = NodeStatus.DRAFT.value
-        node["input_artifact_id"] = None
-        node["output_artifact_id"] = None
-    wf["artifacts"].clear()
-    wf["status"] = WorkflowStatus.DRAFT.value
-    wf["updated_at"] = _now()
+def run_all_tasks(board: dict, model: str = "GPT-4o") -> int:
+    """Run all runnable tasks in dependency order. Returns count of tasks run."""
+    count = 0
+    changed = True
+    while changed:
+        changed = False
+        for tid, task in board["tasks"].items():
+            if task["status"] == "Done":
+                continue
+            if can_run_task(board, tid):
+                run_task(board, tid, model)
+                count += 1
+                changed = True
+    return count
 
 
-def _get_tool(tool_id: str) -> dict | None:
-    for t in TOOL_CATALOG:
-        if t["id"] == tool_id:
-            return t
-    return None
+def reset_board(board: dict) -> None:
+    for task in board["tasks"].values():
+        task["status"] = "To Do"
+        task["output_content"] = ""
+    board["updated_at"] = _now()
 
 
 # ---------------------------------------------------------------------------
 # Persistence
 # ---------------------------------------------------------------------------
-WORKFLOW_DIR = Path(__file__).parent / "workspace" / "workflows"
-WORKFLOW_DIR.mkdir(parents=True, exist_ok=True)
+BOARDS_DIR = Path(__file__).parent / "workspace" / "boards"
+BOARDS_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def save_workflow(wf: dict) -> Path:
-    path = WORKFLOW_DIR / f"{wf['id']}.json"
-    path.write_text(json.dumps(wf, indent=2, ensure_ascii=False))
+def save_board(board: dict) -> Path:
+    path = BOARDS_DIR / f"{board['id']}.json"
+    path.write_text(json.dumps(board, indent=2, ensure_ascii=False))
     return path
 
 
-def load_workflow(wf_id: str) -> dict | None:
-    path = WORKFLOW_DIR / f"{wf_id}.json"
+def load_board(board_id: str) -> dict | None:
+    path = BOARDS_DIR / f"{board_id}.json"
     if path.exists():
         return json.loads(path.read_text())
     return None
 
 
-def list_workflows() -> list[dict]:
+def list_boards() -> list[dict]:
     results = []
-    for p in sorted(WORKFLOW_DIR.glob("*.json")):
+    for p in sorted(BOARDS_DIR.glob("*.json")):
         try:
             data = json.loads(p.read_text())
-            results.append({"id": data["id"], "name": data["name"], "status": data["status"]})
+            total = len(data["tasks"])
+            done = sum(1 for t in data["tasks"].values() if t["status"] == "Done")
+            results.append({
+                "id": data["id"],
+                "name": data["name"],
+                "total": total,
+                "done": done,
+            })
         except Exception:
             continue
     return results
 
 
-def delete_workflow_file(wf_id: str) -> None:
-    path = WORKFLOW_DIR / f"{wf_id}.json"
+def delete_board_file(board_id: str) -> None:
+    path = BOARDS_DIR / f"{board_id}.json"
     if path.exists():
         path.unlink()
