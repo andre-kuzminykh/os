@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 
 import streamlit as st
+from streamlit_tree_select import tree_select
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -55,30 +56,15 @@ st.markdown("""
     /* Tighter padding */
     .block-container { padding-top: 1rem; padding-bottom: 0; }
 
-    /* File tree buttons */
-    .file-tree-btn > button {
-        text-align: left !important;
-        padding: 2px 8px !important;
-        font-size: 0.85rem !important;
-        background: transparent !important;
-        border: none !important;
-        width: 100% !important;
-    }
-    .file-tree-btn > button:hover {
-        background: rgba(151, 166, 195, 0.15) !important;
-    }
+    /* Hide checkboxes in tree select — click-to-select only */
+    .rct-checkbox { display: none !important; }
 
-    /* Selected file highlight */
-    .file-selected > button {
-        background: rgba(80, 140, 255, 0.2) !important;
-        border-left: 3px solid #508cff !important;
+    /* Tree node styling */
+    .rct-node-leaf .rct-title {
+        cursor: pointer !important;
     }
-
-    /* Chat messages area */
-    .chat-area {
-        height: 55vh;
-        overflow-y: auto;
-        padding: 0.5rem;
+    .rct-node-leaf .rct-title:hover {
+        color: #508cff !important;
     }
 
     /* Compact header */
@@ -88,20 +74,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
-# Helper: collect files recursively
+# Helper: build tree nodes for streamlit_tree_select
 # ---------------------------------------------------------------------------
-def get_files(base: Path) -> list[Path]:
+def build_tree_nodes(base: Path) -> list[dict]:
+    """Build nested node list for tree_select component."""
+    nodes = []
     if not base.exists():
-        return []
-    files = []
+        return nodes
     for item in sorted(base.iterdir()):
         if item.name.startswith("."):
             continue
         if item.is_dir():
-            files.extend(get_files(item))
+            children = build_tree_nodes(item)
+            if children:
+                nodes.append({
+                    "label": f"📁 {item.name}",
+                    "value": str(item),
+                    "children": children,
+                })
         else:
-            files.append(item)
-    return files
+            nodes.append({
+                "label": f"📄 {item.name}",
+                "value": str(item),
+            })
+    return nodes
 
 # ---------------------------------------------------------------------------
 # LAYOUT: 3 columns — File Tree | Editor | Chat
@@ -143,22 +139,44 @@ with tree_col:
 
     st.divider()
 
-    # Render file list
-    files = get_files(FILES_DIR)
-    for f in files:
-        rel = f.relative_to(FILES_DIR)
-        is_selected = st.session_state["selected_file"] == str(f)
-        css_class = "file-selected" if is_selected else "file-tree-btn"
+    # Tree select component
+    nodes = build_tree_nodes(FILES_DIR)
+    if nodes:
+        # Pre-check currently selected file so it stays highlighted
+        prev_checked = []
+        if st.session_state["selected_file"]:
+            prev_checked = [st.session_state["selected_file"]]
 
-        with st.container():
-            st.markdown(f'<div class="{css_class}">', unsafe_allow_html=True)
-            if st.button(f"📄 {rel}", key=f"f_{f}", use_container_width=True):
-                st.session_state["selected_file"] = str(f)
-                st.session_state["file_content"] = f.read_text(errors="replace")
-                st.session_state["editing"] = False
-                st.session_state["create_new"] = False
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+        result = tree_select(
+            nodes,
+            check_model="leaf",
+            checked=prev_checked,
+            expanded=[str(FILES_DIR)],
+            expand_on_click=True,
+            only_leaf_checkboxes=True,
+            no_cascade=True,
+        )
+
+        # Detect newly selected file
+        checked = result.get("checked", [])
+        if checked:
+            new_selection = checked[-1]  # take last clicked
+            if new_selection != st.session_state["selected_file"]:
+                fpath = Path(new_selection)
+                if fpath.is_file():
+                    st.session_state["selected_file"] = str(fpath)
+                    st.session_state["file_content"] = fpath.read_text(errors="replace")
+                    st.session_state["editing"] = False
+                    st.session_state["create_new"] = False
+                    st.rerun()
+        elif not checked and st.session_state["selected_file"]:
+            # User unchecked — deselect
+            st.session_state["selected_file"] = None
+            st.session_state["file_content"] = ""
+            st.session_state["editing"] = False
+            st.rerun()
+    else:
+        st.caption("No files yet. Create one above.")
 
 # ========================== CENTER: EDITOR =================================
 with editor_col:
