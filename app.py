@@ -134,7 +134,7 @@ def build_tree_nodes(base: Path) -> list[dict]:
 # PAGE ROUTING
 # ===========================================================================
 if st.session_state["current_page"] == "flow":
-    render_flow_page()
+    render_flow_page(FILES_DIR)
 else:
     # ---------------------------------------------------------------------------
     # LAYOUT: 3 columns — File Tree | Editor | Chat

@@ -21,6 +21,24 @@ STATUS_ICONS = {
 }
 
 
+TOOLS = [
+    {"id": "input_parser", "name": "Input Parser", "description": "Parse raw input into structured data"},
+    {"id": "llm_generator", "name": "LLM Generator", "description": "Generate text using an LLM"},
+    {"id": "summarizer", "name": "Summarizer", "description": "Summarize long text into key points"},
+    {"id": "risk_extractor", "name": "Risk Extractor", "description": "Extract risks from text"},
+    {"id": "formatter", "name": "Formatter", "description": "Format data into a template"},
+    {"id": "validator", "name": "Validator", "description": "Validate data against rules"},
+    {"id": "merger", "name": "Merger", "description": "Merge multiple inputs into one"},
+    {"id": "classifier", "name": "Classifier", "description": "Classify input into categories"},
+    {"id": "translator", "name": "Translator", "description": "Translate text between languages"},
+    {"id": "code_generator", "name": "Code Generator", "description": "Generate code from spec"},
+]
+
+TOOL_NAMES = ["(no tool)"] + [t["name"] for t in TOOLS]
+
+MODELS = ["GPT-4o", "GPT-4o mini", "Claude Sonnet", "Claude Haiku"]
+
+
 def _uid() -> str:
     return uuid.uuid4().hex[:8]
 
@@ -51,6 +69,8 @@ def new_task(
     depends_on: list[str] | None = None,
     input_artifacts: list[str] | None = None,
     output_artifact: str = "",
+    tool_id: str = "",
+    model: str = "GPT-4o",
 ) -> dict:
     return {
         "id": _uid(),
@@ -63,6 +83,8 @@ def new_task(
         "input_artifacts": input_artifacts or [],
         "output_artifact": output_artifact,
         "output_content": "",
+        "tool_id": tool_id,
+        "model": model,
         "created_at": _now(),
         "updated_at": _now(),
     }
@@ -131,7 +153,7 @@ def can_run_task(board: dict, task_id: str) -> bool:
 # Mock LLM execution
 # ---------------------------------------------------------------------------
 
-def run_task(board: dict, task_id: str, model: str = "GPT-4o") -> str | None:
+def run_task(board: dict, task_id: str, model: str | None = None) -> str | None:
     """Execute a task via mock LLM. Returns output content or None if blocked."""
     task = board["tasks"].get(task_id)
     if not task:
@@ -140,6 +162,13 @@ def run_task(board: dict, task_id: str, model: str = "GPT-4o") -> str | None:
     blocked = get_blocked_by(board, task_id)
     if blocked:
         return None
+
+    model = model or task.get("model", "GPT-4o")
+    tool_name = ""
+    for t in TOOLS:
+        if t["id"] == task.get("tool_id"):
+            tool_name = t["name"]
+            break
 
     task["status"] = "In Progress"
     task["updated_at"] = _now()
@@ -151,16 +180,26 @@ def run_task(board: dict, task_id: str, model: str = "GPT-4o") -> str | None:
         if dep and dep.get("output_content"):
             context_parts.append(f"[From {dep['title']}]: {dep['output_content']}")
     for art in task["input_artifacts"]:
-        context_parts.append(f"[Input file]: {art}")
+        # Try reading file content
+        p = Path(art)
+        if p.is_file():
+            try:
+                content = p.read_text(errors="replace")[:500]
+                context_parts.append(f"[File: {p.name}]:\n{content}")
+            except Exception:
+                context_parts.append(f"[File]: {art}")
+        else:
+            context_parts.append(f"[Artifact]: {art}")
 
     context = "\n".join(context_parts) if context_parts else "No additional context."
     prompt = task.get("prompt") or task["title"]
 
+    tool_line = f"\nTool: {tool_name}" if tool_name else ""
     # Mock LLM response
     output = (
-        f"**[{model}]** Task: {task['title']}\n\n"
-        f"Prompt: *{prompt[:120]}*\n\n"
-        f"Context: {context[:200]}\n\n"
+        f"**[{model}]** Task: {task['title']}{tool_line}\n\n"
+        f"Prompt: *{prompt[:200]}*\n\n"
+        f"Context: {context[:500]}\n\n"
         f"Generated output for '{task['title']}':\n"
         f"- Analysis point 1\n"
         f"- Analysis point 2\n"
