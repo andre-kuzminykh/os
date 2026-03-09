@@ -278,3 +278,135 @@ def delete_board_file(board_id: str) -> None:
     path = BOARDS_DIR / f"{board_id}.json"
     if path.exists():
         path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# App domains
+# ---------------------------------------------------------------------------
+APP_DOMAINS = [
+    {
+        "id": "management", "name": "Management", "icon": "📊",
+        "prompts": ["Create project plan", "Risk assessment", "Status report"],
+        "tools": ["llm_generator", "summarizer", "risk_extractor"],
+    },
+    {
+        "id": "hr", "name": "HR", "icon": "👥",
+        "prompts": ["Write job description", "Interview questions", "Onboarding checklist"],
+        "tools": ["llm_generator", "formatter"],
+    },
+    {
+        "id": "marketing", "name": "Marketing", "icon": "📣",
+        "prompts": ["Content plan", "Campaign brief", "Competitor analysis"],
+        "tools": ["llm_generator", "summarizer", "classifier"],
+    },
+    {
+        "id": "smm", "name": "SMM", "icon": "📱",
+        "prompts": ["Social media post", "Content calendar", "Engagement report"],
+        "tools": ["llm_generator", "formatter"],
+    },
+    {
+        "id": "sales", "name": "Sales", "icon": "💰",
+        "prompts": ["Sales pitch", "Proposal draft", "Lead qualification"],
+        "tools": ["llm_generator", "formatter", "summarizer"],
+    },
+    {
+        "id": "support", "name": "Support", "icon": "🎧",
+        "prompts": ["FAQ draft", "Response template", "Ticket analysis"],
+        "tools": ["llm_generator", "classifier", "summarizer"],
+    },
+    {
+        "id": "analysis", "name": "Analysis", "icon": "📈",
+        "prompts": ["Data summary", "Trend analysis", "Report generation"],
+        "tools": ["summarizer", "risk_extractor", "classifier"],
+    },
+    {
+        "id": "design", "name": "Design", "icon": "🎨",
+        "prompts": ["Design brief", "UI review", "Style guide"],
+        "tools": ["llm_generator", "formatter"],
+    },
+    {
+        "id": "development", "name": "Development", "icon": "💻",
+        "prompts": ["Code review", "Architecture doc", "API specification"],
+        "tools": ["code_generator", "validator", "formatter"],
+    },
+    {
+        "id": "engineering", "name": "Engineering", "icon": "⚙️",
+        "prompts": ["System design", "Infrastructure plan", "Performance report"],
+        "tools": ["code_generator", "validator", "summarizer"],
+    },
+]
+
+
+# ---------------------------------------------------------------------------
+# Branch / Continue / Rerun
+# ---------------------------------------------------------------------------
+
+def branch_task(board: dict, task_id: str) -> Optional[dict]:
+    """Create a branch (copy) of a task with a new ID."""
+    original = board["tasks"].get(task_id)
+    if not original:
+        return None
+    task = new_task(
+        title=f"{original['title']} (branch)",
+        parent_id=original.get("parent_id"),
+        description=original.get("description", ""),
+        prompt=original.get("prompt", ""),
+        depends_on=list(original.get("depends_on", [])),
+        input_artifacts=list(original.get("input_artifacts", [])),
+        output_artifact=original.get("output_artifact", ""),
+        tool_id=original.get("tool_id", ""),
+        model=original.get("model", "GPT-4o"),
+    )
+    task["branched_from"] = task_id
+    add_task(board, task)
+    return task
+
+
+def continue_task(board: dict, task_id: str) -> Optional[dict]:
+    """Create a continuation task that depends on the original."""
+    original = board["tasks"].get(task_id)
+    if not original:
+        return None
+    task = new_task(
+        title=f"{original['title']} (continued)",
+        parent_id=original.get("parent_id"),
+        depends_on=[task_id],
+        model=original.get("model", "GPT-4o"),
+    )
+    task["continued_from"] = task_id
+    add_task(board, task)
+    return task
+
+
+def rerun_task(board: dict, task_id: str) -> Optional[str]:
+    """Reset and re-execute a task."""
+    task = board["tasks"].get(task_id)
+    if not task:
+        return None
+    task["status"] = "To Do"
+    task["output_content"] = ""
+    task["updated_at"] = _now()
+    return run_task(board, task_id)
+
+
+def save_output_as_file(board: dict, task_id: str, output_dir: Path) -> Optional[Path]:
+    """Save a task's output as a file in the workspace."""
+    task = board["tasks"].get(task_id)
+    if not task or not task.get("output_content"):
+        return None
+
+    filename = task.get("output_artifact") or f"{task['title'].lower().replace(' ', '_')}.md"
+    if not any(filename.endswith(ext) for ext in ('.md', '.txt', '.py', '.json', '.csv')):
+        filename += ".md"
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / filename
+
+    content = (
+        f"<!-- AI Generated -->\n"
+        f"<!-- Source: {task['title']} | Model: {task.get('model', 'unknown')} | "
+        f"Task: {task['id']} -->\n\n"
+        f"{task['output_content']}"
+    )
+    path.write_text(content)
+    return path
