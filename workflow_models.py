@@ -6,7 +6,7 @@ import json
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 
 # ---------------------------------------------------------------------------
@@ -63,11 +63,11 @@ def new_board(name: str = "Untitled Board") -> dict:
 
 def new_task(
     title: str,
-    parent_id: str | None = None,
+    parent_id: Optional[str] = None,
     description: str = "",
     prompt: str = "",
-    depends_on: list[str] | None = None,
-    input_artifacts: list[str] | None = None,
+    depends_on: Optional[list[str]] = None,
+    input_artifacts: Optional[list[str]] = None,
     output_artifact: str = "",
     tool_id: str = "",
     model: str = "GPT-4o",
@@ -153,7 +153,7 @@ def can_run_task(board: dict, task_id: str) -> bool:
 # Mock LLM execution
 # ---------------------------------------------------------------------------
 
-def run_task(board: dict, task_id: str, model: str | None = None) -> str | None:
+def run_task(board: dict, task_id: str, model: Optional[str] = None) -> Optional[str]:
     """Execute a task via mock LLM. Returns output content or None if blocked."""
     task = board["tasks"].get(task_id)
     if not task:
@@ -249,7 +249,7 @@ def save_board(board: dict) -> Path:
     return path
 
 
-def load_board(board_id: str) -> dict | None:
+def load_board(board_id: str) -> Optional[dict]:
     path = BOARDS_DIR / f"{board_id}.json"
     if path.exists():
         return json.loads(path.read_text())

@@ -4,7 +4,10 @@ File tree is ALWAYS visible on the left.
 Main content area switches between: flow, file_viewer, task_fullscreen.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import Optional
 
 import streamlit as st
 from streamlit_tree_select import tree_select
@@ -49,7 +52,7 @@ for key, val in DEFAULTS.items():
 # ---------------------------------------------------------------------------
 # Mock LLM
 # ---------------------------------------------------------------------------
-def call_llm(prompt: str, model: str = "GPT-4o", context_files: list[Path] | None = None) -> str:
+def call_llm(prompt: str, model: str = "GPT-4o", context_files: Optional[list[Path]] = None) -> str:
     ctx = ""
     if context_files:
         names = [f.name for f in context_files]
